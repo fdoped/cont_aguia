@@ -191,7 +191,7 @@ if not csvs_locais:
 c_tit, c_sel = st.columns([2, 2])
 
 with c_tit:
-    st.markdown('<div class="main-title">📊 Engenharia de Controladoria</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-title">📊 Contabilidade</div>', unsafe_allow_html=True)
 with c_sel:
     arquivo_escolhido = st.selectbox("📂 Selecione o Balancete:", csvs_locais, index=0)
 
