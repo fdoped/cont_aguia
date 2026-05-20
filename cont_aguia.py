@@ -146,32 +146,42 @@ def formatar_num_br(v: float) -> str:
     
     
 def verificar_consistencia_contabil(df):
-    """Realiza críticas contábeis no DataFrame carregado."""
+    """Realiza críticas contábeis no DataFrame carregado, eliminando duplicidade de níveis."""
     criticas = []
     
-    total_ativo = df[df['conta'].str.startswith('1')]['atual'].sum()
-    total_passivo_pl = df[df['conta'].str.startswith('2')]['atual'].sum()
+    # 1. Equilíbrio Patrimonial (Ativo vs Passivo+PL)
+    # Busca especificamente a linha da conta raiz '1' e '2'
+    ativo = df.loc[df['conta'] == '1', 'atual'].sum()
+    passivo = df.loc[df['conta'] == '2', 'atual'].sum()
     
-    # Tolerância de arredondamento
+    # Usa abs() porque o Passivo vem negativo do sistema
+    total_ativo = abs(ativo)
+    total_passivo_pl = abs(passivo)
+    
+    # Tolerância de 0.05 para arredondamentos sistêmicos
     if abs(total_ativo - total_passivo_pl) > 0.05:
         dif = abs(total_ativo - total_passivo_pl)
         criticas.append(f"⚠️ **Desequilíbrio Patrimonial:** Ativo ({formatar_num_br(total_ativo)}) ≠ Passivo+PL ({formatar_num_br(total_passivo_pl)}). Diferença: {formatar_num_br(dif)}")
     
-    # Verificação de caixa/bancos negativos
-    caixa_negativo = df[(df['conta'].str.startswith('1101')) & (df['atual'] < 0)]
+    # 2. Verificação de contas Caixa/Bancos negativas
+    # Filtra Ativo Circulante (11) que seja conta analítica (tipo == 2) e com saldo negativo
+    caixa_negativo = df[(df['conta'].str.startswith('11')) & (df['atual'] < 0) & (df['tipo'] == 2)]
     for _, row in caixa_negativo.iterrows():
-        criticas.append(f"❌ **Conta Negativa:** {row['conta']} - {row['descricao']} está com saldo {formatar_num_br(row['atual'])}")
+        criticas.append(f"❌ **Conta Negativa (Ativo Circulante):** {row['conta']} - {row['descricao']} está com saldo {formatar_num_br(row['atual'])}")
     
-    # Verificação de DRE
-    receitas = df[df['conta'].str.startswith('3')]['atual'].sum()
-    despesas = df[df['conta'].str.startswith('4')]['atual'].sum()
-    if abs(receitas + despesas) > 1.0:
-        resultado = receitas + despesas
-        criticas.append(f"🔍 **DRE Aberta:** Contas de resultado possuem saldo acumulado de {formatar_num_br(resultado)}. Verifique se o exercício foi encerrado.")
+    # 3. Verificação de Fechamento de DRE
+    # Busca especificamente as raízes de Receitas (3), Despesas (4) e Custos (5)
+    rec = df.loc[df['conta'] == '3', 'atual'].sum()
+    desp = df.loc[df['conta'] == '4', 'atual'].sum()
+    custo = df.loc[df['conta'] == '5', 'atual'].sum()
+    
+    # Como Receitas vêm negativas e Despesas/Custos positivas, a soma deles deve dar zero se o exercício foi encerrado.
+    resultado_dre = rec + desp + custo
+    
+    if abs(resultado_dre) > 1.0:
+        criticas.append(f"🔍 **DRE Aberta:** Contas de resultado possuem saldo acumulado de {formatar_num_br(abs(resultado_dre))}. Verifique se o exercício foi encerrado.")
         
     return criticas
-
-
 # ─────────────────────────────────────────────────────────
 # COMBOBOX DE ARQUIVOS LOCAIS
 # ─────────────────────────────────────────────────────────
