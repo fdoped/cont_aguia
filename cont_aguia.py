@@ -146,42 +146,39 @@ def formatar_num_br(v: float) -> str:
     
     
 def verificar_consistencia_contabil(df):
-    """Realiza críticas contábeis no DataFrame carregado, eliminando duplicidade de níveis."""
+    """Realiza críticas contabilísticas no DataFrame carregado, com apuramento dinâmico de resultados."""
     criticas = []
     
-    # 1. Equilíbrio Patrimonial (Ativo vs Passivo+PL)
-    # Busca especificamente a linha da conta raiz '1' e '2'
+    # 1. Captura os saldos absolutos das raízes
     ativo = df.loc[df['conta'] == '1', 'atual'].sum()
     passivo = df.loc[df['conta'] == '2', 'atual'].sum()
     
-    # Usa abs() porque o Passivo vem negativo do sistema
-    total_ativo = abs(ativo)
-    total_passivo_pl = abs(passivo)
-    
-    # Tolerância de 0.05 para arredondamentos sistêmicos
-    if abs(total_ativo - total_passivo_pl) > 0.05:
-        dif = abs(total_ativo - total_passivo_pl)
-        criticas.append(f"⚠️ **Desequilíbrio Patrimonial:** Ativo ({formatar_num_br(total_ativo)}) ≠ Passivo+PL ({formatar_num_br(total_passivo_pl)}). Diferença: {formatar_num_br(dif)}")
-    
-    # 2. Verificação de contas Caixa/Bancos negativas
-    # Filtra Ativo Circulante (11) que seja conta analítica (tipo == 2) e com saldo negativo
-    caixa_negativo = df[(df['conta'].str.startswith('11')) & (df['atual'] < 0) & (df['tipo'] == 2)]
-    for _, row in caixa_negativo.iterrows():
-        criticas.append(f"❌ **Conta Negativa (Ativo Circulante):** {row['conta']} - {row['descricao']} está com saldo {formatar_num_br(row['atual'])}")
-    
-    # 3. Verificação de Fechamento de DRE
-    # Busca especificamente as raízes de Receitas (3), Despesas (4) e Custos (5)
     rec = df.loc[df['conta'] == '3', 'atual'].sum()
     desp = df.loc[df['conta'] == '4', 'atual'].sum()
     custo = df.loc[df['conta'] == '5', 'atual'].sum()
     
-    # Como Receitas vêm negativas e Despesas/Custos positivas, a soma deles deve dar zero se o exercício foi encerrado.
-    resultado_dre = rec + desp + custo
+    # 2. Correção da Matemática da DRE (Como tudo vem positivo: Receitas - Despesas - Custos)
+    resultado_dre = rec - desp - custo
     
+    # Verificação de Fechamento de DRE
     if abs(resultado_dre) > 1.0:
-        criticas.append(f"🔍 **DRE Aberta:** Contas de resultado possuem saldo acumulado de {formatar_num_br(abs(resultado_dre))}. Verifique se o exercício foi encerrado.")
+        criticas.append(f"🔍 **DRE Aberta:** O exercício possui um resultado (Lucro/Prejuízo) de {formatar_num_br(resultado_dre)} que ainda não foi transferido para o Património Líquido.")
+        
+    # 3. Equilíbrio Patrimonial Inteligente (Ativo vs Passivo + Resultado)
+    # Se a DRE estiver aberta, o Balanço só fecha se somarmos o Resultado ao Passivo.
+    diferenca = ativo - (passivo + resultado_dre)
+    
+    if abs(diferenca) > 0.05:
+        criticas.append(f"⚠️ **Desequilíbrio Patrimonial Grave:** Mesmo considerando o resultado da DRE, há uma diferença de {formatar_num_br(abs(diferenca))} entre as origens e aplicações.")
+    
+    # 4. Verificação de contas Caixa/Bancos negativas
+    caixa_negativo = df[(df['conta'].str.startswith('11')) & (df['atual'] < 0) & (df['tipo'] == 2)]
+    for _, row in caixa_negativo.iterrows():
+        criticas.append(f"❌ **Conta Negativa (Ativo Circulante):** {row['conta']} - {row['descricao']} está com saldo {formatar_num_br(row['atual'])}")
         
     return criticas
+
+
 # ─────────────────────────────────────────────────────────
 # COMBOBOX DE ARQUIVOS LOCAIS
 # ─────────────────────────────────────────────────────────
