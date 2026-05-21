@@ -579,29 +579,8 @@ else:
 # ─────────────────────────────────────────────────────────
 # ENGINE HTML+JS (COM A SOLUÇÃO DE RESIZE DO SEU ARQUIVO)
 # ─────────────────────────────────────────────────────────
-def gerar_componente_arvore(raizes: list, show_dc: bool, busca: str = "", acao: str = "default", ocultar_zeradas: bool = False) -> str:
+def gerar_componente_arvore(raizes: list, show_dc: bool, busca: str = "", acao: str = "default") -> str:
     df_base = df[df["raiz"].isin([str(r) for r in raizes])].sort_values("conta").copy()
-    
-    # ── NOVO: Filtro Inteligente de Contas Zeradas ──
-    if ocultar_zeradas:
-        mask_mov = (df_base['anterior'].abs() > 0.01) | \
-                   (df_base['debito'].abs() > 0.01) | \
-                   (df_base['credito'].abs() > 0.01) | \
-                   (df_base['atual'].abs() > 0.01)
-        contas_com_movimento = df_base[mask_mov]['conta'].tolist()
-        
-        contas_a_manter = set(contas_com_movimento)
-        dict_parents = df_base.set_index('conta')['parent'].to_dict()
-        
-        for c in contas_com_movimento:
-            p = dict_parents.get(c, "")
-            while p:
-                contas_a_manter.add(p)
-                p = dict_parents.get(p, "")
-                
-        df_base = df_base[df_base['conta'].isin(contas_a_manter)]
-    
-    codigos_presentes = df_base["conta"].tolist()
     
     html_rows = ""
     for _, row in df_base.iterrows():
@@ -611,7 +590,7 @@ def gerar_componente_arvore(raizes: list, show_dc: bool, busca: str = "", acao: 
         nivel = row["nivel"]
         parent = row["parent"]
         
-        has_children = any(c.startswith(codigo) and c != codigo for c in codigos_presentes)
+        has_children = any(c.startswith(codigo) and c != codigo for c in todos_codigos)
         seta = "▶" if has_children else "·"
         
         indent = (nivel - 1) * 16
@@ -823,19 +802,18 @@ def gerar_componente_arvore(raizes: list, show_dc: bool, busca: str = "", acao: 
     return html_final
 
 def criar_barra_ferramentas(key: str):
-    # Ajustamos as larguras para acomodar 5 botões/campos
-    c1, c2, c3, c4, c5 = st.columns([1.1, 1.1, 1.3, 1.4, 3.1])
+    c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 3.4])
     with c1: exp = st.button("⊞ Expandir Tudo", key=f"btn_exp_{key}", use_container_width=True)
     with c2: col = st.button("⊟ Recolher Tudo", key=f"btn_col_{key}", use_container_width=True)
     with c3: exibir_dc = st.toggle("Visualizar D/C", value=False, key=f"tgl_{key}")
-    with c4: ocultar_z = st.toggle("Ocultar Zeradas", value=False, key=f"tgl_z_{key}")
-    with c5: busca = st.text_input("Filtro:", placeholder="🔍 Filtrar...", key=f"inp_{key}", label_visibility="collapsed")
+    with c4: busca = st.text_input("Filtro:", placeholder="🔍 Filtrar...", key=f"inp_{key}", label_visibility="collapsed")
             
+    
     acao = "default"
     if exp: acao = "expand_all"
     elif col: acao = "collapse_all"
     
-    return exibir_dc, ocultar_z, busca, acao
+    return exibir_dc, busca, acao
 
 
 # ─────────────────────────────────────────────────────────
@@ -864,35 +842,34 @@ with tab_dre:
         </div>
     </div>""", unsafe_allow_html=True)
 
-    # Recebe a nova variável "ocultar_z"
-    show_dc, ocultar_z, busca_dre, acao_dre = criar_barra_ferramentas("dre")
+    show_dc, busca_dre, acao_dre = criar_barra_ferramentas("dre")
     
     col_rec, col_desp = st.columns(2)
     with col_rec:
         st.markdown(f"**Estrutura de Receitas**")
-        html_r = gerar_componente_arvore([3], show_dc, busca_dre, acao_dre, ocultar_z)
+        html_r = gerar_componente_arvore([3], show_dc, busca_dre, acao_dre)
+        # Com o ResizeObserver configurado, a altura inicial aqui não limita a expansão
         components.html(html_r, height=400, scrolling=False)
         
     with col_desp:
         st.markdown(f"**Estrutura de Custos e Despesas**")
-        html_d = gerar_componente_arvore([4, 5], show_dc, busca_dre, acao_dre, ocultar_z)
+        html_d = gerar_componente_arvore([4, 5], show_dc, busca_dre, acao_dre)
         components.html(html_d, height=400, scrolling=False)
 
 
 # ─── ABA BALANÇO PATRIMONIAL ───
 with tab_bp:
-    # Recebe a nova variável "ocultar_z_bp"
-    show_dc_bp, ocultar_z_bp, busca_bp, acao_bp = criar_barra_ferramentas("bp")
+    show_dc_bp, busca_bp, acao_bp = criar_barra_ferramentas("bp")
     
     col_ativo, col_passivo = st.columns(2)
     with col_ativo:
         st.markdown(f"**ATIVO CONSOLIDADO**")
-        html_a = gerar_componente_arvore([1], show_dc_bp, busca_bp, acao_bp, ocultar_z_bp)
+        html_a = gerar_componente_arvore([1], show_dc_bp, busca_bp, acao_bp)
         components.html(html_a, height=400, scrolling=False)
         
     with col_passivo:
         st.markdown(f"**PASSIVO & PATRIMÔNIO LÍQUIDO**")
-        html_p = gerar_componente_arvore([2], show_dc_bp, busca_bp, acao_bp, ocultar_z_bp)
+        html_p = gerar_componente_arvore([2], show_dc_bp, busca_bp, acao_bp)
         components.html(html_p, height=400, scrolling=False)
 
 
