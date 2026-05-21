@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 # CONFIGURAÇÃO DA PÁGINA & IDENTIDADE VISUAL CLEAN
 # ─────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Controladoria Executiva",
+    page_title="Contabilidade Analítica",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -140,72 +140,372 @@ def carregar_csv_local(caminho_arquivo: str) -> pd.DataFrame:
     out["parent"] = out["conta"].apply(buscar_pai)
     return out
     
+    
+# ─────────────────────────────────────────────────────────
+# FUNÇÃO DE CONSOLIDAÇÃO (MÚLTIPLAS EMPRESAS)
+# ─────────────────────────────────────────────────────────
+def consolidar_balancetes(lista_arquivos: list) -> pd.DataFrame:
+    """Lê uma lista de arquivos CSV e consolida os saldos pelo código da conta."""
+    dfs = []
+    for arq in lista_arquivos:
+        df_temp = carregar_csv_local(arq)
+        dfs.append(df_temp)
+        
+    # Empilha todos os balancetes
+    df_concat = pd.concat(dfs, ignore_index=True)
+    
+    # Agrupa pelo código da conta e consolida (soma valores, mantém descrições)
+    df_consolidado = df_concat.groupby("conta", as_index=False).agg({
+        "descricao": "first", # Mantém o nome da conta do plano padrão
+        "anterior": "sum",
+        "debito": "sum",
+        "credito": "sum",
+        "atual": "sum",
+        "tipo": "first",      # 1=Sintética, 2=Analítica
+        "nivel": "first",
+        "raiz": "first",
+        "parent": "first"
+    })
+    
+    # Reordena pela conta para garantir que a árvore HTML não quebre
+    df_consolidado = df_consolidado.sort_values("conta").reset_index(drop=True)
+    return df_consolidado
+    
 def formatar_num_br(v: float) -> str:
     """Formata número no padrão brasileiro (123.456,78) sem símbolo de moeda."""
     return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     
     
 def verificar_consistencia_contabil(df):
-    """Realiza críticas contabilísticas no DataFrame carregado, com apuramento dinâmico de resultados."""
+    """
+    Auditoria contábil automática em 7 categorias:
+      1. Equilíbrio estrutural (equação patrimonial + DRE aberta)
+      2. Integridade dos lançamentos (partidas dobradas por conta)
+      3. Integridade da árvore (saldo sintética vs. soma dos filhos)
+      4. Saldos anormais (natureza invertida)
+      5. Contas sem movimento com saldo anterior vivo
+      6. Indicadores de risco econômico-financeiro
+      7. Alertas específicos de grupos sensíveis (caixa, PL, imobilizado)
+    Retorna lista de strings com prefixo ❌ / ⚠️ / 🔍 indicando severidade.
+    """
     criticas = []
-    
-    # 1. Captura os saldos absolutos das raízes
-    ativo = df.loc[df['conta'] == '1', 'atual'].sum()
-    passivo = df.loc[df['conta'] == '2', 'atual'].sum()
-    
-    rec = df.loc[df['conta'] == '3', 'atual'].sum()
-    desp = df.loc[df['conta'] == '4', 'atual'].sum()
-    custo = df.loc[df['conta'] == '5', 'atual'].sum()
-    
-    # 2. Correção da Matemática da DRE (Como tudo vem positivo: Receitas - Despesas - Custos)
+    is_analitica = df['tipo'].astype(int) == 2
+
+    # ── Atalhos de saldo por conta sintética raiz ─────────────────────────
+    def saldo_sintetica(prefixo):
+        rows = df[df['conta'] == str(prefixo)]
+        return rows['atual'].sum() if not rows.empty else 0.0
+
+    def soma_analiticas_prefixo(prefixo):
+        mask = df['conta'].str.startswith(str(prefixo)) & is_analitica
+        return df[mask]['atual'].sum()
+
+    ativo   = saldo_sintetica('1')
+    passivo = saldo_sintetica('2')
+    rec     = saldo_sintetica('3')
+    desp    = saldo_sintetica('4')
+    custo   = saldo_sintetica('5')
     resultado_dre = rec - desp - custo
-    
-    # Verificação de Fechamento de DRE
-    if abs(resultado_dre) > 1.0:
-        criticas.append(f"🔍 **DRE Aberta:** O exercício possui um resultado (Lucro/Prejuízo) de {formatar_num_br(resultado_dre)} que ainda não foi transferido para o Património Líquido.")
-        
-    # 3. Equilíbrio Patrimonial Inteligente (Ativo vs Passivo + Resultado)
-    # Se a DRE estiver aberta, o Balanço só fecha se somarmos o Resultado ao Passivo.
-    diferenca = ativo - (passivo + resultado_dre)
-    
-    if abs(diferenca) > 0.05:
-        criticas.append(f"⚠️ **Desequilíbrio Patrimonial Grave:** Mesmo considerando o resultado da DRE, há uma diferença de {formatar_num_br(abs(diferenca))} entre as origens e aplicações.")
-    
-    # 4. Verificação de contas Caixa/Bancos negativas
-    caixa_negativo = df[(df['conta'].str.startswith('11')) & (df['atual'] < 0) & (df['tipo'] == 2)]
-    for _, row in caixa_negativo.iterrows():
-        criticas.append(f"❌ **Conta Negativa (Ativo Circulante):** {row['conta']} - {row['descricao']} está com saldo {formatar_num_br(row['atual'])}")
-        
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 1 — EQUILÍBRIO ESTRUTURAL
+    # ══════════════════════════════════════════════════════════════════════
+
+    # 1a. Equação patrimonial: Ativo + Passivo ≈ 0  (passivo carrega sinal negativo)
+    diferenca_bp = ativo + passivo
+    if abs(diferenca_bp) > 0.05:
+        criticas.append(
+            f"❌ **Desequilíbrio Patrimonial:** Ativo ({formatar_num_br(ativo)}) ≠ "
+            f"Passivo+PL ({formatar_num_br(abs(passivo))}). "
+            f"Diferença: {formatar_num_br(abs(diferenca_bp))}."
+        )
+
+    # 1b. DRE aberta: resultado não transferido ao PL
+    pl_sintetico = df.loc[df['conta'].str.startswith('23'), 'atual'].sum()
+    if abs(resultado_dre) > 1.0 and abs(pl_sintetico) < 0.05:
+        criticas.append(
+            f"🔍 **DRE Aberta:** Resultado de {formatar_num_br(resultado_dre)} "
+            f"não foi encerrado para o Patrimônio Líquido."
+        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 2 — INTEGRIDADE DOS LANÇAMENTOS (PARTIDAS DOBRADAS)
+    # Verifica conta a conta: saldo_atual deve bater com anterior + débito - crédito
+    # ══════════════════════════════════════════════════════════════════════
+    TOLERANCIA = 0.10   # R$ 0,10 de tolerância para arredondamentos
+    erros_lancamento = []
+    for _, row in df[is_analitica].iterrows():
+        esperado = row['anterior'] + row['debito'] - row['credito']
+        if abs(esperado - row['atual']) > TOLERANCIA:
+            erros_lancamento.append(
+                f"{row['conta']} - {row['descricao']} "
+                f"(esperado: {formatar_num_br(esperado)} | registrado: {formatar_num_br(row['atual'])})"
+            )
+    if erros_lancamento:
+        criticas.append(
+            f"❌ **Partidas Dobradas Inconsistentes:** {len(erros_lancamento)} conta(s) onde "
+            f"Anterior + Débito − Crédito ≠ Saldo Atual: "
+            + " | ".join(erros_lancamento[:5])
+            + (" [...]" if len(erros_lancamento) > 5 else "")
+        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 3 — INTEGRIDADE DA ÁRVORE
+    # Saldo da conta sintética deve ser igual (ou próximo) da soma dos filhos diretos analíticos
+    # ══════════════════════════════════════════════════════════════════════
+    todos_codigos = df['conta'].tolist()
+    sinteticas = df[df['tipo'].astype(int) == 1].copy()
+    erros_arvore = []
+    for _, row in sinteticas.iterrows():
+        pai = str(row['conta'])
+        # soma todos os filhos analíticos diretos (qualquer profundidade) do pai
+        filhos_mask = df['conta'].str.startswith(pai) & (df['conta'] != pai) & is_analitica
+        soma_filhos = df[filhos_mask]['atual'].sum()
+        if abs(soma_filhos) > 0.05 and abs(row['atual'] - soma_filhos) / max(abs(row['atual']), 1) > 0.02:
+            erros_arvore.append(
+                f"{pai} ({row['descricao']}): sintética={formatar_num_br(row['atual'])} | "
+                f"soma filhos={formatar_num_br(soma_filhos)}"
+            )
+    if erros_arvore:
+        criticas.append(
+            f"⚠️ **Árvore de Contas Desbalanceada:** {len(erros_arvore)} conta(s) sintética(s) "
+            f"cujo saldo diverge da soma dos filhos analíticos (>2%): "
+            + " | ".join(erros_arvore[:4])
+            + (" [...]" if len(erros_arvore) > 4 else "")
+        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 4 — SALDOS DE NATUREZA ANORMAL (INVERTIDOS)
+    # ══════════════════════════════════════════════════════════════════════
+    REDUTORAS = [
+        'deprecia', 'amortiza', 'provis', 'perda', 'redutor',
+        'preju', 'ajuste', 'tesouraria', 'deducao', 'deducões',
+        'iss', 'pis', 'cofins', 'irrf', 'desconto',
+    ]
+
+    for _, row in df[is_analitica].iterrows():
+        conta = str(row['conta'])
+        desc  = str(row['descricao']).lower()
+        atual = row['atual']
+        eh_redutora = any(p in desc for p in REDUTORAS)
+
+        if eh_redutora:
+            continue   # redutoras com saldo negativo são normais
+
+        if atual < -0.05:
+            if conta.startswith('1'):
+                criticas.append(f"❌ **Ativo Credor:** {conta} — {row['descricao']} → {formatar_num_br(atual)}")
+            elif conta.startswith('2'):
+                criticas.append(f"❌ **Passivo Devedor:** {conta} — {row['descricao']} → {formatar_num_br(atual)}")
+            elif conta.startswith('3'):
+                criticas.append(f"⚠️ **Receita com Saldo Devedor:** {conta} — {row['descricao']} → {formatar_num_br(atual)}")
+            elif conta[0] in ('4', '5'):
+                criticas.append(f"⚠️ **Despesa/Custo com Saldo Credor Atípico:** {conta} — {row['descricao']} → {formatar_num_br(atual)}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 5 — CONTAS PARADAS (SEM MOVIMENTO, SALDO ANTERIOR VIVO)
+    # Pode indicar lançamentos esquecidos, contas obsoletas ou erros de migração
+    # ══════════════════════════════════════════════════════════════════════
+    LIMITE_PARADA = 1000.0   # ignora saldos residuais abaixo de R$ 1.000
+    paradas = df[
+        is_analitica &
+        (df['debito'].abs() < 0.05) &
+        (df['credito'].abs() < 0.05) &
+        (df['anterior'].abs() > LIMITE_PARADA)
+    ]
+    if not paradas.empty:
+        lista_paradas = [
+            f"{r['conta']} — {r['descricao']} ({formatar_num_br(r['anterior'])})"
+            for _, r in paradas.iterrows()
+        ]
+        criticas.append(
+            f"🔍 **Contas Sem Movimento no Período:** {len(paradas)} conta(s) com saldo "
+            f"anterior vivo mas zero de débito e crédito: "
+            + " | ".join(lista_paradas[:5])
+            + (" [...]" if len(lista_paradas) > 5 else "")
+        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 6 — INDICADORES DE RISCO ECONÔMICO-FINANCEIRO
+    # ══════════════════════════════════════════════════════════════════════
+    ativ_circ  = df[df['conta'].str.startswith('11') & (df['nivel'] == 2)]['atual'].sum()
+    pass_circ  = abs(df[df['conta'].str.startswith('21') & (df['nivel'] == 2)]['atual'].sum())
+    pass_ncirc = abs(df[df['conta'].str.startswith('22') & (df['nivel'] == 2)]['atual'].sum())
+    pl_val     = abs(df[df['conta'].str.startswith('23') & (df['nivel'] == 2)]['atual'].sum())
+
+    # 6a. Passivo a descoberto (PL negativo)
+    if pl_sintetico > 0.05:   # sinal positivo = PL negativo no sistema (passivo carrega sinal -)
+        criticas.append(
+            f"❌ **Passivo a Descoberto (Insolvência Técnica):** O Patrimônio Líquido é "
+            f"negativo em {formatar_num_br(abs(pl_sintetico))}. A empresa está tecnicamente insolvente."
+        )
+
+    # 6b. Liquidez corrente crítica
+    if pass_circ > 0.05:
+        lc = ativ_circ / pass_circ
+        if lc < 0.50:
+            criticas.append(
+                f"❌ **Liquidez Corrente Crítica:** LC = {lc:.2f}× "
+                f"(Ativ. Circ. {formatar_num_br(ativ_circ)} / Pass. Circ. {formatar_num_br(pass_circ)}). "
+                f"Risco elevado de inadimplência de curto prazo."
+            )
+        elif lc < 1.00:
+            criticas.append(
+                f"⚠️ **Liquidez Corrente Abaixo de 1:** LC = {lc:.2f}×. "
+                f"O passivo circulante supera o ativo circulante."
+            )
+
+    # 6c. Endividamento excessivo
+    ativo_total = ativo
+    if ativo_total > 0.05:
+        endiv = (pass_circ + pass_ncirc) / ativo_total * 100
+        if endiv > 80:
+            criticas.append(
+                f"❌ **Endividamento Crítico:** {endiv:.1f}% do ativo financiado por terceiros "
+                f"(referência: até 60%)."
+            )
+        elif endiv > 60:
+            criticas.append(
+                f"⚠️ **Endividamento Elevado:** {endiv:.1f}% do ativo financiado por terceiros."
+            )
+
+    # 6d. Prejuízo acumulado corrói o capital social
+    capital_social = abs(df[
+        is_analitica & df['conta'].str.startswith('23') &
+        df['descricao'].str.lower().str.contains('capital')
+    ]['atual'].sum())
+    prejuizo_acum = abs(df[
+        is_analitica & df['conta'].str.startswith('23') &
+        df['descricao'].str.lower().str.contains('preju')
+    ]['atual'].sum())
+    if capital_social > 0.05 and prejuizo_acum > capital_social * 0.5:
+        criticas.append(
+            f"⚠️ **Prejuízo Corrói Capital Social:** Prejuízos acumulados "
+            f"({formatar_num_br(prejuizo_acum)}) superam 50% do capital social "
+            f"({formatar_num_br(capital_social)})."
+        )
+
+    # 6e. Despesas excedem receitas por margem expressiva
+    if rec > 0.05 and resultado_dre < 0:
+        margem_neg = abs(resultado_dre) / rec * 100
+        if margem_neg > 30:
+            criticas.append(
+                f"❌ **Margem Negativa Crítica:** Prejuízo representa {margem_neg:.1f}% da receita. "
+                f"Resultado: {formatar_num_br(resultado_dre)}."
+            )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIA 7 — ALERTAS POR GRUPOS CONTÁBEIS SENSÍVEIS
+    # ══════════════════════════════════════════════════════════════════════
+
+    # 7a. Caixa negativo (impossível fisicamente)
+    caixas_negativos = df[
+        is_analitica &
+        (df['atual'] < -0.05) &
+        df['descricao'].str.lower().str.contains('caixa|banco|numerario', regex=True)
+    ]
+    for _, row in caixas_negativos.iterrows():
+        criticas.append(
+            f"❌ **Caixa/Banco Negativo:** {row['conta']} — {row['descricao']} → "
+            f"{formatar_num_br(row['atual'])}. Saldo fisicamente impossível."
+        )
+
+    # 7b. Clientes/Duplicatas com saldo credor (empresa deve ao cliente — atípico)
+    clientes_credores = df[
+        is_analitica &
+        (df['atual'] < -0.05) &
+        df['conta'].str.startswith('1') &
+        df['descricao'].str.lower().str.contains('client|duplic|receber', regex=True)
+    ]
+    for _, row in clientes_credores.iterrows():
+        criticas.append(
+            f"⚠️ **Cliente/Duplicata Credora:** {row['conta']} — {row['descricao']} → "
+            f"{formatar_num_br(row['atual'])}. Verifique notas de crédito ou devoluções."
+        )
+
+    # 7c. Fornecedores com saldo devedor (empresa tem crédito com fornecedor — atípico)
+    fornec_devedores = df[
+        is_analitica &
+        (df['atual'] > 0.05) &
+        df['conta'].str.startswith('2') &
+        df['descricao'].str.lower().str.contains('fornec|pagar', regex=True)
+    ]
+    for _, row in fornec_devedores.iterrows():
+        criticas.append(
+            f"⚠️ **Fornecedor Devedor:** {row['conta']} — {row['descricao']} → "
+            f"{formatar_num_br(row['atual'])}. Pode indicar pagamento em duplicidade."
+        )
+
+    # 7d. Imobilizado com saldo líquido negativo (depreciação acumulada > custo histórico)
+    imobilizado_bruto = df[
+        is_analitica & df['conta'].str.startswith('12') &
+        ~df['descricao'].str.lower().str.contains('deprecia|amortiza', regex=True)
+    ]['atual'].sum()
+    depreciacao_acum = abs(df[
+        is_analitica & df['conta'].str.startswith('12') &
+        df['descricao'].str.lower().str.contains('deprecia|amortiza', regex=True)
+    ]['atual'].sum())
+    if depreciacao_acum > imobilizado_bruto and imobilizado_bruto > 0.05:
+        criticas.append(
+            f"⚠️ **Depreciação Acumulada Excede Custo do Imobilizado:** "
+            f"Custo histórico {formatar_num_br(imobilizado_bruto)} < "
+            f"Depreciação acumulada {formatar_num_br(depreciacao_acum)}. "
+            f"Revise o cronograma de depreciação ou baixe os bens totalmente depreciados."
+        )
+
+    # 7e. Contas de resultado com saldo zero mas com débito e crédito (lançamentos que se anulam)
+    resultado_zerado = df[
+        is_analitica &
+        (df['atual'].abs() < 0.05) &
+        (df['debito'] > 100) &
+        (df['credito'] > 100) &
+        df['conta'].str[0].isin(['3', '4', '5'])
+    ]
+    if not resultado_zerado.empty:
+        lista_rz = [f"{r['conta']} — {r['descricao']}" for _, r in resultado_zerado.iterrows()]
+        criticas.append(
+            f"🔍 **Contas de Resultado com Saldo Zerado por Estorno:** "
+            f"{len(resultado_zerado)} conta(s) com débito e crédito significativos mas saldo zero. "
+            f"Pode indicar lançamentos incorretos estornados: "
+            + " | ".join(lista_rz[:4])
+        )
+
     return criticas
 
 
 # ─────────────────────────────────────────────────────────
-# COMBOBOX DE ARQUIVOS LOCAIS
+# SELETOR DE MÚLTIPLOS ARQUIVOS (CONSOLIDAÇÃO)
 # ─────────────────────────────────────────────────────────
-csvs_locais = glob.glob("*.csv")
+import os
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+csvs_locais = [f for f in os.listdir(diretorio_atual) if f.lower().endswith('.csv')]
 
 if not csvs_locais:
-    st.error("📂 Nenhum arquivo CSV detectado na pasta do aplicativo.")
+    st.error(f"📂 Nenhum arquivo CSV detectado na pasta do servidor.")
     st.stop()
 
 c_tit, c_sel = st.columns([2, 2])
-
 with c_tit:
-    st.markdown('<div class="main-title">📊 Contabilidade</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-title">📊 Contabilidade Analítica</div>', unsafe_allow_html=True)
 with c_sel:
-    arquivo_escolhido = st.selectbox("📂 Selecione o Balancete:", csvs_locais, index=0)
+    arquivos_escolhidos = st.multiselect(
+        "📂 Selecione as Empresas (Balancetes):", 
+        csvs_locais, 
+        default=[csvs_locais[0]] if csvs_locais else None
+    )
 
-if "arquivo_atual" not in st.session_state or st.session_state.arquivo_atual != arquivo_escolhido:
-    st.session_state.df = carregar_csv_local(arquivo_escolhido)
-    st.session_state.arquivo_atual = arquivo_escolhido
-    st.session_state.periodo = arquivo_escolhido.replace(".csv", "")
-    lista_criticas = verificar_consistencia_contabil(st.session_state.df)
-    if lista_criticas:
-        with st.expander("🚨 Auditoria Contábil (Alertas encontrados)", expanded=True):
-            for aviso in lista_criticas:
-                st.markdown(aviso)
+if not arquivos_escolhidos:
+    st.warning("⚠️ Selecione pelo menos um balancete para visualizar os dados.")
+    st.stop()
+
+if "arquivos_atuais" not in st.session_state or st.session_state.arquivos_atuais != arquivos_escolhidos:
+    st.session_state.df = consolidar_balancetes(arquivos_escolhidos)
+    st.session_state.arquivos_atuais = arquivos_escolhidos
+    
+    if len(arquivos_escolhidos) > 1:
+        st.session_state.periodo = f"Consolidado de {len(arquivos_escolhidos)} Empresas"
     else:
-        st.success("✅ Auditoria Contábil: Nenhuma inconsistência grave encontrada.")
+        st.session_state.periodo = arquivos_escolhidos[0].replace(".csv", "")
 
 df = st.session_state.df
 todos_codigos = df["conta"].tolist()
@@ -255,6 +555,25 @@ with c3: st.markdown(kpi_html("Custos e Despesas", fmt_brl(desp_total), f"{abs(d
 with c4: st.markdown(kpi_html("Ativo Controlado", fmt_brl(ativo_total), f"Circulante: {fmt_brl(ativ_circ)}"), unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────
+# MALHA FINA CONTÁBIL — exibe alertas da função de crítica
+# ─────────────────────────────────────────────────────────
+criticas = verificar_consistencia_contabil(df)
+
+if criticas:
+    with st.expander(f"⚠️ Malha Fina Contábil — {len(criticas)} inconsistência(s) detectada(s)", expanded=True):
+        for c in criticas:
+            if c.startswith("❌"):
+                st.error(c)
+            elif c.startswith("⚠️"):
+                st.warning(c)
+            else:
+                st.info(c)
+else:
+    with st.expander("✅ Malha Fina Contábil — Nenhuma inconsistência detectada", expanded=False):
+        st.success("O balancete passou em todas as verificações contábeis automáticas.")
 
 
 # ─────────────────────────────────────────────────────────
